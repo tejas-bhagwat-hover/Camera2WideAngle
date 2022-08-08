@@ -33,6 +33,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.isVisible
@@ -59,7 +60,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
-@Suppress("DEPRECATION")
+@Suppress("DEPRECATION", "BlockingMethodInNonBlockingContext")
 class CameraFragment : Fragment() {
 
     private var _fragmentCameraBinding: FragmentCameraBinding? = null
@@ -71,6 +72,7 @@ class CameraFragment : Fragment() {
         Navigation.findNavController(requireActivity(), R.id.fragment_container)
     }
     private var cameraId = ""
+
     /** Detects, characterizes, and connects to a CameraDevice (used for all camera operations) */
     private val cameraManager: CameraManager by lazy {
         val context = requireContext().applicationContext
@@ -144,7 +146,8 @@ class CameraFragment : Fragment() {
                 holder: SurfaceHolder,
                 format: Int,
                 width: Int,
-                height: Int) = Unit
+                height: Int
+            ) = Unit
 
             override fun surfaceCreated(holder: SurfaceHolder) {
                 val previewSize = getPreviewOutputSize(
@@ -152,7 +155,10 @@ class CameraFragment : Fragment() {
                     characteristics,
                     SurfaceHolder::class.java
                 )
-                Log.d(TAG, "View finder size: ${fragmentCameraBinding.viewFinder.width} x ${fragmentCameraBinding.viewFinder.height}")
+                Log.d(
+                    TAG,
+                    "View finder size: ${fragmentCameraBinding.viewFinder.width} x ${fragmentCameraBinding.viewFinder.height}"
+                )
                 Log.d(TAG, "Selected preview size: $previewSize")
                 fragmentCameraBinding.viewFinder.setAspectRatio(
                     previewSize.width,
@@ -168,7 +174,7 @@ class CameraFragment : Fragment() {
         }
 
         fragmentCameraBinding.changeCamera.setOnClickListener {
-            if(list.size-1 > currentCamera)
+            if (list.size - 1 > currentCamera)
                 currentCamera++
             else
                 currentCamera = 0
@@ -190,7 +196,8 @@ class CameraFragment : Fragment() {
         camera = openCamera(cameraManager, cameraId, cameraHandler)
 
         val size = characteristics.get(
-            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        )!!
             .getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.height * it.width }!!
         imageReader = ImageReader.newInstance(
             size.width, size.height, ImageFormat.JPEG, IMAGE_BUFFER_SIZE
@@ -200,7 +207,8 @@ class CameraFragment : Fragment() {
         session = createCaptureSession(camera, targets, cameraHandler)
 
         val captureRequest = camera.createCaptureRequest(
-            CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(fragmentCameraBinding.viewFinder.holder.surface) }
+            CameraDevice.TEMPLATE_PREVIEW
+        ).apply { addTarget(fragmentCameraBinding.viewFinder.holder.surface) }
         session.setRepeatingRequest(captureRequest.build(), null, cameraHandler)
         fragmentCameraBinding.captureButton.setOnClickListener {
             it.isEnabled = false
@@ -212,16 +220,19 @@ class CameraFragment : Fragment() {
                     if (output.extension == "jpg") {
                         val exif = ExifInterface(output.absolutePath)
                         exif.setAttribute(
-                            ExifInterface.TAG_ORIENTATION, result.orientation.toString())
+                            ExifInterface.TAG_ORIENTATION, result.orientation.toString()
+                        )
                         exif.saveAttributes()
                         Log.d(TAG, "EXIF metadata saved: ${output.absolutePath}")
                     }
                     lifecycleScope.launch(Dispatchers.Main) {
+                        Toast.makeText(requireContext(), "Image saved: ${output.absolutePath}",Toast.LENGTH_LONG).show()
                         navController.navigate(
                             CameraFragmentDirections
-                            .actionCameraToJpegViewer(output.absolutePath)
-                            .setOrientation(result.orientation)
-                            .setDepth(result.format == ImageFormat.DEPTH_JPEG))
+                                .actionCameraToJpegViewer(output.absolutePath)
+                                .setOrientation(result.orientation)
+                                .setDepth(result.format == ImageFormat.DEPTH_JPEG)
+                        )
                     }
                 }
                 it.post { it.isEnabled = true }
@@ -304,17 +315,22 @@ class CameraFragment : Fragment() {
         }, imageReaderHandler)
 
         val captureRequest = session.device.createCaptureRequest(
-            CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+            CameraDevice.TEMPLATE_STILL_CAPTURE
+        ).apply {
             addTarget(imageReader.surface)
-            set(CaptureRequest.DISTORTION_CORRECTION_MODE,CaptureRequest.DISTORTION_CORRECTION_MODE_HIGH_QUALITY)
-            }
+            set(
+                CaptureRequest.DISTORTION_CORRECTION_MODE,
+                CaptureRequest.DISTORTION_CORRECTION_MODE_HIGH_QUALITY
+            )
+        }
         session.capture(captureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
 
             override fun onCaptureStarted(
                 session: CameraCaptureSession,
                 request: CaptureRequest,
                 timestamp: Long,
-                frameNumber: Long) {
+                frameNumber: Long
+            ) {
                 super.onCaptureStarted(session, request, timestamp, frameNumber)
                 fragmentCameraBinding.viewFinder.post(animationTask)
             }
@@ -322,7 +338,8 @@ class CameraFragment : Fragment() {
             override fun onCaptureCompleted(
                 session: CameraCaptureSession,
                 request: CaptureRequest,
-                result: TotalCaptureResult) {
+                result: TotalCaptureResult
+            ) {
                 super.onCaptureCompleted(session, request, result)
                 val resultTimestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
                 Log.d(TAG, "Capture result received: $resultTimestamp")
@@ -336,7 +353,8 @@ class CameraFragment : Fragment() {
                     while (true) {
                         val image = imageQueue.take()
                         if (image.format != ImageFormat.DEPTH_JPEG &&
-                            image.timestamp != resultTimestamp) continue
+                            image.timestamp != resultTimestamp
+                        ) continue
                         Log.d(TAG, "Matching image dequeued: ${image.timestamp}")
                         imageReaderHandler.removeCallbacks(timeoutRunnable)
                         imageReader.setOnImageAvailableListener(null, null)
@@ -349,7 +367,8 @@ class CameraFragment : Fragment() {
                         val exifOrientation = computeExifOrientation(rotation, mirrored)
                         cont.resume(
                             CombinedCaptureResult(
-                            image, result, exifOrientation, imageReader.imageFormat)
+                                image, result, exifOrientation, imageReader.imageFormat
+                            )
                         )
                     }
                 }
