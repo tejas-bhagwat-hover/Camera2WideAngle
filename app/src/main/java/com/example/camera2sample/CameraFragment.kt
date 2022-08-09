@@ -28,15 +28,14 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import android.view.LayoutInflater
-import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.View
-import android.view.ViewGroup
+import android.util.Size
+import android.view.*
 import android.widget.Toast
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.isVisible
+import androidx.core.view.updateLayoutParams
 import androidx.exifinterface.media.ExifInterface
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -51,14 +50,13 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
+import java.util.*
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeoutException
-import java.util.Date
-import java.util.Locale
-import kotlin.RuntimeException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+
 
 @Suppress("DEPRECATION", "BlockingMethodInNonBlockingContext")
 class CameraFragment : Fragment() {
@@ -133,6 +131,7 @@ class CameraFragment : Fragment() {
         cameraId = list[currentCamera]
         fragmentCameraBinding.changeCamera.isVisible = list.size > 1
         characteristics = cameraManager.getCameraCharacteristics(cameraId)
+
         fragmentCameraBinding.captureButton.setOnApplyWindowInsetsListener { v, insets ->
             v.translationX = (-insets.systemWindowInsetRight).toFloat()
             v.translationY = (-insets.systemWindowInsetBottom).toFloat()
@@ -160,10 +159,7 @@ class CameraFragment : Fragment() {
                     "View finder size: ${fragmentCameraBinding.viewFinder.width} x ${fragmentCameraBinding.viewFinder.height}"
                 )
                 Log.d(TAG, "Selected preview size: $previewSize")
-                fragmentCameraBinding.viewFinder.setAspectRatio(
-                    previewSize.width,
-                    previewSize.height
-                )
+
                 view.post { initializeCamera() }
             }
         })
@@ -182,7 +178,39 @@ class CameraFragment : Fragment() {
             camera.close()
             initializeCamera()
         }
+    }
 
+    private fun getResolution(): Size {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: throw IllegalStateException("Failed to get configuration map.")
+        val choices: Array<Size> = map.getOutputSizes(ImageFormat.JPEG)
+        Arrays.sort(
+            choices,
+            Collections.reverseOrder { lhs, rhs ->
+                java.lang.Long.signum(lhs.width * lhs.height.toLong() - rhs.width * rhs.height.toLong())
+            })
+        var bestFourByThreeResolution = choices[0]
+        for (choice in choices) {
+            if (choice.height.toDouble() / choice.width.toDouble() == 0.75) {
+                bestFourByThreeResolution = choice
+                break
+            }
+        }
+        return bestFourByThreeResolution
+    }
+
+    private fun changeResolution() {
+        val bestResolution = getResolution()
+        Log.d(TAG, "Highest Resolution: ${bestResolution.height} * ${bestResolution.width}")
+        fragmentCameraBinding.viewFinder.setAspectRatio(
+            bestResolution.width,
+            bestResolution.height
+        )
+
+        fragmentCameraBinding.viewFinder.updateLayoutParams<ConstraintLayout.LayoutParams> {
+            dimensionRatio = "H,3:4"
+        }
     }
 
     /**
@@ -193,12 +221,12 @@ class CameraFragment : Fragment() {
      * - Sets up the still image capture listeners
      */
     private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
+        changeResolution()
         camera = openCamera(cameraManager, cameraId, cameraHandler)
 
         val size = characteristics.get(
             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
-        )!!
-            .getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.height * it.width }!!
+        )!!.getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.height * it.width }!!
         imageReader = ImageReader.newInstance(
             size.width, size.height, ImageFormat.JPEG, IMAGE_BUFFER_SIZE
         )
@@ -226,7 +254,11 @@ class CameraFragment : Fragment() {
                         Log.d(TAG, "EXIF metadata saved: ${output.absolutePath}")
                     }
                     lifecycleScope.launch(Dispatchers.Main) {
-                        Toast.makeText(requireContext(), "Image saved: ${output.absolutePath}",Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            requireContext(),
+                            "Image saved: ${output.absolutePath}",
+                            Toast.LENGTH_LONG
+                        ).show()
                         navController.navigate(
                             CameraFragmentDirections
                                 .actionCameraToJpegViewer(output.absolutePath)
@@ -396,29 +428,12 @@ class CameraFragment : Fragment() {
                 val buffer = result.image.planes[0].buffer
                 val bytes = ByteArray(buffer.remaining()).apply { buffer.get(this) }
                 try {
-                    val output = createFile(requireContext(), "jpg")
+                    val output = createFile(requireContext())
                     FileOutputStream(output).use { it.write(bytes) }
                     cont.resume(output)
                 } catch (exc: IOException) {
-                    Log.e(TAG, "Unable to write JPEG image to file", exc)
                     cont.resumeWithException(exc)
                 }
-            }
-            ImageFormat.RAW_SENSOR -> {
-                val dngCreator = DngCreator(characteristics, result.metadata)
-                try {
-                    val output = createFile(requireContext(), "dng")
-                    FileOutputStream(output).use { dngCreator.writeImage(it, result.image) }
-                    cont.resume(output)
-                } catch (exc: IOException) {
-                    Log.e(TAG, "Unable to write DNG image to file", exc)
-                    cont.resumeWithException(exc)
-                }
-            }
-            else -> {
-                val exc = RuntimeException("Unknown image format: ${result.image.format}")
-                Log.e(TAG, exc.message, exc)
-                cont.resumeWithException(exc)
             }
         }
     }
@@ -475,9 +490,9 @@ class CameraFragment : Fragment() {
          *
          * @return [File] created.
          */
-        private fun createFile(context: Context, extension: String): File {
+        private fun createFile(context: Context): File {
             val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
-            return File(context.filesDir, "IMG_${sdf.format(Date())}.$extension")
+            return File(context.filesDir, "IMG_${sdf.format(Date())}.jpg")
         }
     }
 }
